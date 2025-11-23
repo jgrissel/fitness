@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  logger:
+    build: .
+    container_name: garmin_logger
+    command: python main.py
+    restart: always
+    environment:
+      - GARMIN_EMAIL=${GARMIN_EMAIL}
+      - GARMIN_PASSWORD=${GARMIN_PASSWORD}
+      - DB_PATH=/data/garmin_data.db
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - garmin_data:/data
+
+  dashboard:
+    build: .
+    container_name: garmin_dashboard
+    command: streamlit run dashboard.py --server.port=8501 --server.address=0.0.0.0
+    restart: always
+    ports:
+      - "8501:8501"
+    environment:
+      - DB_PATH=/data/garmin_data.db
+    volumes:
+      - garmin_data:/data
+    depends_on:
+      - logger
+
+volumes:
+  garmin_data:
