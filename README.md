@@ -63,6 +63,10 @@ The SQLite database contains the following tables:
 -   `hrv_summary`: Nightly HRV average and status.
 -   `activities`: Detailed stats for runs, rides, hikes, etc.
 
-## Cloud Deployment
+## Deployment
 
-This project is ready for Google Cloud Run. See [deploy.md](deploy.md) for detailed instructions.
+### Google Cloud (Serverless)
+Deploy to Cloud Run (scales to zero). See [deploy.md](deploy.md).
+
+### Linux VPS (Docker Compose)
+Deploy to any Linux server (DigitalOcean, Linode, etc.). See [deploy_vps.md](deploy_vps.md).
