@@ -1,9 +1,9 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+from db_manager import DBManager
 
 # Page Config
 st.set_page_config(page_title="Garmin Health Dashboard", page_icon="🏃", layout="wide")
@@ -11,7 +11,8 @@ st.set_page_config(page_title="Garmin Health Dashboard", page_icon="🏃", layou
 # Database Connection
 @st.cache_data
 def load_data():
-    conn = sqlite3.connect("garmin_data.db")
+    db = DBManager()
+    conn = db.get_connection()
     
     daily = pd.read_sql_query("SELECT * FROM daily_summary ORDER BY date DESC", conn)
     sleep = pd.read_sql_query("SELECT * FROM sleep_summary ORDER BY date DESC", conn)
@@ -33,6 +34,9 @@ st.sidebar.info(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 if st.sidebar.button("Refresh Data"):
     st.cache_data.clear()
     st.rerun()
+
+st.sidebar.markdown("---")
+unit_system = st.sidebar.radio("Unit System", ["Imperial", "Metric"], index=0)
 
 st.sidebar.markdown("---")
 st.sidebar.header("Backfill Data")
@@ -61,7 +65,7 @@ if submit_backfill:
 st.title("🏃 Garmin Health Dashboard")
 
 # Tabs
-tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Sleep", "HRV", "Activities"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Overview", "Sleep", "HRV", "Activities", "Activity Analysis"])
 
 with tab1:
     st.header("Daily Overview")
@@ -161,3 +165,122 @@ with tab4:
             st.plotly_chart(fig_act_hr, use_container_width=True)
     else:
         st.warning("No activities found.")
+
+with tab5:
+    st.header("Activity Analysis")
+    
+    # Activity Selector
+    # Activity Selector
+
+def convert_units(df, system):
+    if system == "Imperial":
+        if 'speed' in df.columns:
+            df['speed_display'] = df['speed'] * 2.23694  # m/s to mph
+            speed_unit = "mph"
+        else:
+            speed_unit = "mph"
+        
+        if 'elevation' in df.columns:
+            df['elevation_display'] = df['elevation'] * 3.28084 # m to ft
+            elev_unit = "ft"
+        else:
+            elev_unit = "ft"
+            
+        dist_factor = 0.000621371 # m to miles
+        dist_unit = "mi"
+    else:
+        if 'speed' in df.columns:
+            df['speed_display'] = df['speed'] * 3.6 # m/s to km/h
+            speed_unit = "km/h"
+        else:
+            speed_unit = "km/h"
+            
+        if 'elevation' in df.columns:
+            df['elevation_display'] = df['elevation'] # m
+            elev_unit = "m"
+        else:
+            elev_unit = "m"
+            
+        dist_factor = 0.001 # m to km
+        dist_unit = "km"
+        
+    return df, speed_unit, elev_unit, dist_factor, dist_unit
+
+with tab5:
+    st.header("Activity Analysis")
+    
+    if not activities_df.empty:
+        activities_df['label'] = activities_df.apply(
+            lambda x: f"{x['start_time']} - {x['activity_name']} ({x['activity_type']})", axis=1
+        )
+        
+        selected_label = st.selectbox("Select Activity", activities_df['label'])
+        selected_activity = activities_df[activities_df['label'] == selected_label].iloc[0]
+        act_id = int(selected_activity['activity_id'])
+        
+        db = DBManager()
+        details_json = db.get_activity_details_json(act_id)
+        
+        if details_json:
+            from activity_parser import parse_activity_details
+            details_df = parse_activity_details(details_json)
+            
+            if not details_df.empty:
+                # Apply Conversions
+                details_df, speed_unit, elev_unit, dist_factor, dist_unit = convert_units(details_df, unit_system)
+                
+                # Summary Metrics (with unit toggle)
+                c1, c2, c3, c4 = st.columns(4)
+                
+                dist_val = selected_activity['distance_meters'] * dist_factor
+                c1.metric(f"Distance ({dist_unit})", f"{dist_val:.2f}")
+                c2.metric("Duration", str(timedelta(seconds=int(selected_activity['duration_seconds']))))
+                c3.metric("Avg HR", f"{selected_activity['avg_hr']} bpm")
+                c4.metric("Calories", f"{selected_activity['calories']}")
+                
+                # --- MAP ---
+                if 'latitude' in details_df.columns and 'longitude' in details_df.columns:
+                    st.subheader("Route")
+                    map_df = details_df.dropna(subset=['latitude', 'longitude'])
+                    if not map_df.empty:
+                        fig_map = px.line_mapbox(
+                            map_df, lat="latitude", lon="longitude", zoom=11, height=400
+                        )
+                        fig_map.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":0,"l":0,"b":0})
+                        st.plotly_chart(fig_map, use_container_width=True)
+                
+                # --- CHARTS ---
+                st.subheader("Metrics")
+                x_col = 'timestamp' if 'timestamp' in details_df.columns else details_df.index
+                
+                # 1. Heart Rate
+                if 'heart_rate' in details_df.columns:
+                    fig_hr = px.line(details_df, x=x_col, y='heart_rate', title="Heart Rate (bpm)", color_discrete_sequence=['red'])
+                    st.plotly_chart(fig_hr, use_container_width=True)
+                
+                # 2. Power
+                if 'power' in details_df.columns:
+                    fig_pwr = px.line(details_df, x=x_col, y='power', title="Power (Watts)", color_discrete_sequence=['orange'])
+                    st.plotly_chart(fig_pwr, use_container_width=True)
+
+                # 3. Speed
+                if 'speed_display' in details_df.columns:
+                    fig_spd = px.line(details_df, x=x_col, y='speed_display', title=f"Speed ({speed_unit})", color_discrete_sequence=['blue'])
+                    st.plotly_chart(fig_spd, use_container_width=True)
+                    
+                # 4. Cadence
+                if 'cadence' in details_df.columns:
+                    fig_cad = px.line(details_df, x=x_col, y='cadence', title="Cadence (rpm)", color_discrete_sequence=['purple'])
+                    st.plotly_chart(fig_cad, use_container_width=True)
+
+                # 5. Elevation
+                if 'elevation_display' in details_df.columns:
+                    fig_elev = px.area(details_df, x=x_col, y='elevation_display', title=f"Elevation ({elev_unit})", color_discrete_sequence=['green'])
+                    st.plotly_chart(fig_elev, use_container_width=True)
+
+            else:
+                st.warning("Details parsed structure is empty.")
+        else:
+            st.info("Full details not available for this activity.")
+    else:
+        st.info("No activities to analyze.")

@@ -1,251 +1,186 @@
-import sqlite3
 import os
+import json
+import logging
+import psycopg2
+from psycopg2.extras import Json
 from datetime import datetime
 
-DB_NAME = os.getenv("DB_PATH", "garmin_data.db")
+# Configure logging
+logger = logging.getLogger(__name__)
 
 class DBManager:
-    def __init__(self, db_path=None):
-        self.db_path = db_path if db_path else DB_NAME
+    def __init__(self):
+        self.host = os.getenv("DB_HOST", "localhost")
+        self.port = os.getenv("DB_PORT", "5432")
+        self.dbname = os.getenv("DB_NAME", "garmin")
+        self.user = os.getenv("DB_USER", "postgres")
+        self.password = os.getenv("DB_PASSWORD", "postgres")
         self.init_db()
 
     def get_connection(self):
-        return sqlite3.connect(self.db_path)
+        try:
+            conn = psycopg2.connect(
+                host=self.host,
+                port=self.port,
+                dbname=self.dbname,
+                user=self.user,
+                password=self.password
+            )
+            return conn
+        except Exception as e:
+            logger.error(f"Error connecting to database: {e}")
+            raise
 
     def init_db(self):
-        conn = self.get_connection()
-        cursor = conn.cursor()
+        """Initialize database schema."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
 
-        # Daily Summary Table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS daily_summary (
-                date TEXT PRIMARY KEY,
-                total_steps INTEGER,
-                total_distance_meters INTEGER,
-                active_kcal REAL,
-                bmr_kcal REAL,
-                total_kcal REAL,
-                resting_hr INTEGER,
-                min_hr INTEGER,
-                max_hr INTEGER,
-                avg_stress INTEGER,
-                max_stress INTEGER,
-                body_battery_current INTEGER,
-                body_battery_high INTEGER,
-                body_battery_low INTEGER,
-                last_updated TIMESTAMP
-            )
-        ''')
+            # Daily Summary Table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS daily_summary (
+                    date DATE PRIMARY KEY,
+                    total_steps INTEGER,
+                    total_distance_meters INTEGER,
+                    active_kcal REAL,
+                    bmr_kcal REAL,
+                    total_kcal REAL,
+                    resting_hr INTEGER,
+                    min_hr INTEGER,
+                    max_hr INTEGER,
+                    avg_stress INTEGER,
+                    max_stress INTEGER,
+                    body_battery_current INTEGER,
+                    body_battery_high INTEGER,
+                    body_battery_low INTEGER,
+                    last_updated TIMESTAMP
+                )
+            ''')
 
-        # Sleep Summary Table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS sleep_summary (
-                date TEXT PRIMARY KEY,
-                total_sleep_seconds INTEGER,
-                deep_sleep_seconds INTEGER,
-                light_sleep_seconds INTEGER,
-                rem_sleep_seconds INTEGER,
-                awake_sleep_seconds INTEGER,
-                sleep_score INTEGER,
-                sleep_quality TEXT,
-                last_updated TIMESTAMP
-            )
-        ''')
+            # Sleep Summary Table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS sleep_summary (
+                    date DATE PRIMARY KEY,
+                    total_sleep_seconds INTEGER,
+                    deep_sleep_seconds INTEGER,
+                    light_sleep_seconds INTEGER,
+                    rem_sleep_seconds INTEGER,
+                    awake_sleep_seconds INTEGER,
+                    sleep_score INTEGER,
+                    sleep_quality TEXT,
+                    last_updated TIMESTAMP
+                )
+            ''')
 
-        # HRV Summary Table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS hrv_summary (
-                date TEXT PRIMARY KEY,
-                last_night_avg INTEGER,
-                weekly_avg INTEGER,
-                status TEXT,
-                last_updated TIMESTAMP
-            )
-        ''')
+            # HRV Summary Table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS hrv_summary (
+                    date DATE PRIMARY KEY,
+                    last_night_avg INTEGER,
+                    weekly_avg INTEGER,
+                    status TEXT,
+                    last_updated TIMESTAMP
+                )
+            ''')
 
-        # Activities Table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS activities (
-                activity_id INTEGER PRIMARY KEY,
-                activity_name TEXT,
-                activity_type TEXT,
-                start_time TIMESTAMP,
-                distance_meters REAL,
-                duration_seconds REAL,
-                avg_hr INTEGER,
-                max_hr INTEGER,
-                calories REAL,
-                avg_power INTEGER,
-                max_power INTEGER,
-                elevation_gain_meters REAL,
-                elevation_loss_meters REAL,
-                avg_cadence INTEGER,
-                max_cadence INTEGER,
-                steps INTEGER,
-                last_updated TIMESTAMP
-            )
-        ''')
+            # Activities Table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS activities (
+                    activity_id BIGINT PRIMARY KEY,
+                    activity_name TEXT,
+                    activity_type TEXT,
+                    start_time TIMESTAMP,
+                    distance_meters REAL,
+                    duration_seconds REAL,
+                    avg_hr INTEGER,
+                    max_hr INTEGER,
+                    calories REAL,
+                    avg_power INTEGER,
+                    max_power INTEGER,
+                    elevation_gain_meters REAL,
+                    elevation_loss_meters REAL,
+                    avg_cadence INTEGER,
+                    max_cadence INTEGER,
+                    steps INTEGER,
+                    last_updated TIMESTAMP
+                )
+            ''')
 
-        conn.commit()
-        conn.close()
+            # Activity Details Table (Full JSON store)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS activity_details (
+                    activity_id BIGINT PRIMARY KEY REFERENCES activities(activity_id),
+                    details JSONB,
+                    last_updated TIMESTAMP
+                )
+            ''')
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error initializing database: {e}")
 
     def upsert_daily_summary(self, data):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        query = '''
-            INSERT INTO daily_summary (
-                date, total_steps, total_distance_meters, active_kcal, bmr_kcal, total_kcal,
-                resting_hr, min_hr, max_hr, avg_stress, max_stress,
-                body_battery_current, body_battery_high, body_battery_low, last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(date) DO UPDATE SET
-                total_steps=excluded.total_steps,
-                total_distance_meters=excluded.total_distance_meters,
-                active_kcal=excluded.active_kcal,
-                bmr_kcal=excluded.bmr_kcal,
-                total_kcal=excluded.total_kcal,
-                resting_hr=excluded.resting_hr,
-                min_hr=excluded.min_hr,
-                max_hr=excluded.max_hr,
-                avg_stress=excluded.avg_stress,
-                max_stress=excluded.max_stress,
-                body_battery_current=excluded.body_battery_current,
-                body_battery_high=excluded.body_battery_high,
-                body_battery_low=excluded.body_battery_low,
-                last_updated=excluded.last_updated
-        '''
-        
-        cursor.execute(query, (
-            data.get('date'),
-            data.get('total_steps'),
-            data.get('total_distance_meters'),
-            data.get('active_kcal'),
-            data.get('bmr_kcal'),
-            data.get('total_kcal'),
-            data.get('resting_hr'),
-            data.get('min_hr'),
-            data.get('max_hr'),
-            data.get('avg_stress'),
-            data.get('max_stress'),
-            data.get('body_battery_current'),
-            data.get('body_battery_high'),
-            data.get('body_battery_low'),
-            datetime.now()
-        ))
-        
-        conn.commit()
-        conn.close()
+        self._upsert('daily_summary', 'date', data)
 
     def upsert_sleep_summary(self, data):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        query = '''
-            INSERT INTO sleep_summary (
-                date, total_sleep_seconds, deep_sleep_seconds, light_sleep_seconds,
-                rem_sleep_seconds, awake_sleep_seconds, sleep_score, sleep_quality, last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(date) DO UPDATE SET
-                total_sleep_seconds=excluded.total_sleep_seconds,
-                deep_sleep_seconds=excluded.deep_sleep_seconds,
-                light_sleep_seconds=excluded.light_sleep_seconds,
-                rem_sleep_seconds=excluded.rem_sleep_seconds,
-                awake_sleep_seconds=excluded.awake_sleep_seconds,
-                sleep_score=excluded.sleep_score,
-                sleep_quality=excluded.sleep_quality,
-                last_updated=excluded.last_updated
-        '''
-        
-        cursor.execute(query, (
-            data.get('date'),
-            data.get('total_sleep_seconds'),
-            data.get('deep_sleep_seconds'),
-            data.get('light_sleep_seconds'),
-            data.get('rem_sleep_seconds'),
-            data.get('awake_sleep_seconds'),
-            data.get('sleep_score'),
-            data.get('sleep_quality'),
-            datetime.now()
-        ))
-        
-        conn.commit()
-        conn.close()
+        self._upsert('sleep_summary', 'date', data)
 
     def upsert_hrv_summary(self, data):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        query = '''
-            INSERT INTO hrv_summary (
-                date, last_night_avg, weekly_avg, status, last_updated
-            ) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(date) DO UPDATE SET
-                last_night_avg=excluded.last_night_avg,
-                weekly_avg=excluded.weekly_avg,
-                status=excluded.status,
-                last_updated=excluded.last_updated
-        '''
-        
-        cursor.execute(query, (
-            data.get('date'),
-            data.get('last_night_avg'),
-            data.get('weekly_avg'),
-            data.get('status'),
-            datetime.now()
-        ))
-        
-        conn.commit()
-        conn.close()
+        self._upsert('hrv_summary', 'date', data)
 
     def upsert_activity(self, data):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        query = '''
-            INSERT INTO activities (
-                activity_id, activity_name, activity_type, start_time, distance_meters,
-                duration_seconds, avg_hr, max_hr, calories, avg_power, max_power,
-                elevation_gain_meters, elevation_loss_meters, avg_cadence, max_cadence, steps, last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(activity_id) DO UPDATE SET
-                activity_name=excluded.activity_name,
-                activity_type=excluded.activity_type,
-                start_time=excluded.start_time,
-                distance_meters=excluded.distance_meters,
-                duration_seconds=excluded.duration_seconds,
-                avg_hr=excluded.avg_hr,
-                max_hr=excluded.max_hr,
-                calories=excluded.calories,
-                avg_power=excluded.avg_power,
-                max_power=excluded.max_power,
-                elevation_gain_meters=excluded.elevation_gain_meters,
-                elevation_loss_meters=excluded.elevation_loss_meters,
-                avg_cadence=excluded.avg_cadence,
-                max_cadence=excluded.max_cadence,
-                steps=excluded.steps,
-                last_updated=excluded.last_updated
-        '''
-        
-        cursor.execute(query, (
-            data.get('activity_id'),
-            data.get('activity_name'),
-            data.get('activity_type'),
-            data.get('start_time'),
-            data.get('distance_meters'),
-            data.get('duration_seconds'),
-            data.get('avg_hr'),
-            data.get('max_hr'),
-            data.get('calories'),
-            data.get('avg_power'),
-            data.get('max_power'),
-            data.get('elevation_gain_meters'),
-            data.get('elevation_loss_meters'),
-            data.get('avg_cadence'),
-            data.get('max_cadence'),
-            data.get('steps'),
-            datetime.now()
-        ))
-        
-        conn.commit()
-        conn.close()
+        self._upsert('activities', 'activity_id', data)
+
+    def upsert_activity_details(self, activity_id, details):
+        data = {
+            'activity_id': activity_id,
+            'details': Json(details),
+            'last_updated': datetime.now()
+        }
+        self._upsert('activity_details', 'activity_id', data)
+
+    def _upsert(self, table, conflict_key, data):
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            # Add timestamp if missing
+            if 'last_updated' not in data:
+                data['last_updated'] = datetime.now()
+
+            keys = list(data.keys())
+            columns = ', '.join(keys)
+            placeholders = ', '.join(['%s'] * len(keys))
+            updates = ', '.join([f"{k}=EXCLUDED.{k}" for k in keys if k != conflict_key])
+            
+            query = f'''
+                INSERT INTO {table} ({columns})
+                VALUES ({placeholders})
+                ON CONFLICT ({conflict_key}) 
+                DO UPDATE SET {updates}
+            '''
+            
+            cursor.execute(query, list(data.values()))
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error upserting into {table}: {e}")
+
+    def get_activity_details_json(self, activity_id):
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT details FROM activity_details WHERE activity_id = %s", (activity_id,))
+            result = cursor.fetchone()
+            conn.close()
+            if result:
+                return result[0]
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching details for {activity_id}: {e}")
+            return None
+

@@ -116,6 +116,15 @@ def backfill_data(start_date: date, end_date: date):
                 
             # It's in range
             db.upsert_activity(act)
+            
+            # Fetch full details
+            act_id = act.get('activity_id')
+            if act_id:
+                logger.info(f"    - Fetching full details for activity {act_id}...")
+                details = client.get_activity_details(act_id)
+                if details:
+                    db.upsert_activity_details(act_id, details)
+            
             count_in_range += 1
             
         logger.info(f"  - Saved {count_in_range} activities from this batch.")

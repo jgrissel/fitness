@@ -117,3 +117,10 @@ class GarminClient:
         except Exception as e:
             logger.error(f"Error fetching activities: {e}")
             return []
+
+    def get_activity_details(self, activity_id):
+        try:
+            return self.client.get_activity_details(activity_id)
+        except Exception as e:
+            logger.error(f"Error fetching activity details for {activity_id}: {e}")
+            return None

@@ -9,10 +9,27 @@ services:
     environment:
       - GARMIN_EMAIL=${GARMIN_EMAIL}
       - GARMIN_PASSWORD=${GARMIN_PASSWORD}
-      - DB_PATH=/data/garmin_data.db
+      - DB_HOST=db
+      - DB_NAME=garmin
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
       - PYTHONUNBUFFERED=1
     volumes:
       - garmin_data:/data
+    depends_on:
+      - db
+
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      - POSTGRES_DB=garmin
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
 
   dashboard:
     build: .
@@ -22,11 +39,33 @@ services:
     ports:
       - "8501:8501"
     environment:
-      - DB_PATH=/data/garmin_data.db
+      - DB_HOST=db
+      - DB_NAME=garmin
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
     volumes:
       - garmin_data:/data
     depends_on:
+      - db
       - logger
+
+  api:
+    build: .
+    container_name: garmin_api
+    command: uvicorn api:app --host 0.0.0.0 --port 8000
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=db
+      - DB_NAME=garmin
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    volumes:
+      - garmin_data:/data
+    depends_on:
+      - db
 
 volumes:
   garmin_data:
+  postgres_data:

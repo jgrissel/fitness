@@ -56,6 +56,15 @@ def run_extraction():
         count = 0
         for act in activities:
             db.upsert_activity(act)
+            
+            # Fetch full details
+            act_id = act.get('activity_id')
+            if act_id:
+                logger.info(f"Fetching full details for activity {act_id}...")
+                details = client.get_activity_details(act_id)
+                if details:
+                    db.upsert_activity_details(act_id, details)
+            
             count += 1
         logger.info(f"Saved {count} activities.")
 
