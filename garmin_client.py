@@ -16,9 +16,30 @@ class GarminClient:
         self.client = None
 
     def login(self):
+        token_path = "/data/garmin_tokens"
         try:
             self.client = Garmin(self.email, self.password)
+            
+            # 1. Try to load existing tokens
+            if os.path.exists(token_path):
+                logger.info("Found existing tokens, attempting to load...")
+                try:
+                    self.client.login(token_path)
+                    logger.info("Login with tokens successful.")
+                    return True
+                except Exception as e:
+                    logger.warning(f"Token login failed ({e}), trying password...")
+            
+            # 2. Fallback to password login
             self.client.login()
+            
+            # 3. Save tokens for next time
+            try:
+                self.client.garth.dump(token_path)
+                logger.info(f"Tokens saved to {token_path}")
+            except Exception as e:
+                logger.warning(f"Failed to save tokens: {e}")
+                
             logger.info("Garmin Connect login successful.")
             return True
         except Exception as e:
