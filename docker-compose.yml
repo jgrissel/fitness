@@ -62,6 +62,7 @@ services:
       - DB_USER=postgres
       - DB_PASSWORD=postgres
       - TZ=America/Chicago
+      - API_TOKEN=${API_TOKEN}
     volumes:
       - garmin_data:/data
     depends_on:
