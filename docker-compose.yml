@@ -14,6 +14,7 @@ services:
       - DB_USER=postgres
       - DB_PASSWORD=postgres
       - PYTHONUNBUFFERED=1
+      - TZ=America/Chicago
     volumes:
       - garmin_data:/data
     depends_on:
@@ -41,6 +42,7 @@ services:
       - DB_NAME=garmin
       - DB_USER=postgres
       - DB_PASSWORD=postgres
+      - TZ=America/Chicago
     volumes:
       - garmin_data:/data
     depends_on:
@@ -59,6 +61,7 @@ services:
       - DB_NAME=garmin
       - DB_USER=postgres
       - DB_PASSWORD=postgres
+      - TZ=America/Chicago
     volumes:
       - garmin_data:/data
     depends_on:
