@@ -230,16 +230,21 @@ def export_latest_bundle(auth: str = Depends(get_api_token)):
         # 1. Summaries (Latest Record)
         # Using helper to get DataFrame, then converting to dict
         daily = get_db_data("SELECT * FROM daily_summary ORDER BY date DESC LIMIT 1")
+        # Fix NaN for JSON
+        daily = daily.astype(object).where(pd.notnull(daily), None)
         bundle['daily'] = daily.to_dict(orient='records')[0] if not daily.empty else None
 
         sleep = get_db_data("SELECT * FROM sleep_summary ORDER BY date DESC LIMIT 1")
+        sleep = sleep.astype(object).where(pd.notnull(sleep), None)
         bundle['sleep'] = sleep.to_dict(orient='records')[0] if not sleep.empty else None
 
         hrv = get_db_data("SELECT * FROM hrv_summary ORDER BY date DESC LIMIT 1")
+        hrv = hrv.astype(object).where(pd.notnull(hrv), None)
         bundle['hrv'] = hrv.to_dict(orient='records')[0] if not hrv.empty else None
 
         # 2. Recent Activities (Last 5)
         activities_df = get_db_data("SELECT * FROM activities ORDER BY start_time DESC LIMIT 5")
+        activities_df = activities_df.astype(object).where(pd.notnull(activities_df), None)
         activities_list = []
         
         if not activities_df.empty:
@@ -257,6 +262,9 @@ def export_latest_bundle(auth: str = Depends(get_api_token)):
                         # Resample to reduce token usage (e.g., every 10th row)
                         step = max(1, len(df_details) // 50) 
                         df_sampled = df_details.iloc[::step]
+                        
+                        # Fix NaN in samples
+                        df_sampled = df_sampled.astype(object).where(pd.notnull(df_sampled), None)
                         
                         # Convert timestamps to string for JSON serialization
                         json_details = df_sampled.to_dict(orient='records')
