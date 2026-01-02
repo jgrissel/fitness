@@ -14,18 +14,15 @@ app = FastAPI(title="Garmin Data API")
 
 def get_db_data(query, params=None):
     """Helper to fetch data into a Pandas DataFrame."""
-    try:
-        db = DBManager()
-        conn = db.get_connection()
-        if params:
-            df = pd.read_sql_query(query, conn, params=params)
-        else:
-            df = pd.read_sql_query(query, conn)
-        conn.close()
-        return df
-    except Exception as e:
-        logger.error(f"Database error: {e}")
-        return pd.DataFrame()
+    # Let exceptions bubble up so we can see them in the browser
+    db = DBManager()
+    conn = db.get_connection()
+    if params:
+        df = pd.read_sql_query(query, conn, params=params)
+    else:
+        df = pd.read_sql_query(query, conn)
+    conn.close()
+    return df
 
 def df_to_html(df, title="Data Export"):
     """Converts DataFrame to a clean HTML table."""
@@ -55,6 +52,8 @@ def df_to_html(df, title="Data Export"):
     """
     return html
 
+from fastapi import Response
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return """
@@ -67,20 +66,37 @@ def index():
     </ul>
     """
 
+def set_no_cache(response: Response):
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+
 @app.get("/daily", response_class=HTMLResponse)
-def get_daily():
-    df = get_db_data("SELECT * FROM daily_summary ORDER BY date DESC")
-    return df_to_html(df, "Daily Summary")
+def get_daily(response: Response):
+    set_no_cache(response)
+    try:
+        df = get_db_data("SELECT * FROM daily_summary ORDER BY date DESC")
+        return df_to_html(df, "Daily Summary")
+    except Exception as e:
+        return f"<h3>Error loading Daily Summary</h3><p>{e}</p>"
 
 @app.get("/sleep", response_class=HTMLResponse)
-def get_sleep():
-    df = get_db_data("SELECT * FROM sleep_summary ORDER BY date DESC")
-    return df_to_html(df, "Sleep Summary")
+def get_sleep(response: Response):
+    set_no_cache(response)
+    try:
+        df = get_db_data("SELECT * FROM sleep_summary ORDER BY date DESC")
+        return df_to_html(df, "Sleep Summary")
+    except Exception as e:
+        return f"<h3>Error loading Sleep Summary</h3><p>{e}</p>"
 
 @app.get("/hrv", response_class=HTMLResponse)
-def get_hrv():
-    df = get_db_data("SELECT * FROM hrv_summary ORDER BY date DESC")
-    return df_to_html(df, "HRV Summary")
+def get_hrv(response: Response):
+    set_no_cache(response)
+    try:
+        df = get_db_data("SELECT * FROM hrv_summary ORDER BY date DESC")
+        return df_to_html(df, "HRV Summary")
+    except Exception as e:
+        return f"<h3>Error loading HRV Summary</h3><p>{e}</p>"
 
 @app.get("/activities/export", response_class=HTMLResponse)
 def export_activities(months: int = Query(6, ge=1, le=24)):
