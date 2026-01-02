@@ -16,8 +16,6 @@ def get_db_data(query, params=None):
     """Helper to fetch data into a Pandas DataFrame."""
     # Let exceptions bubble up so we can see them in the browser
     db = DBManager()
-    # DEBUG: Print password (remove after fixing)
-    print(f"DEBUG: Connecting with user='{db.user}' password='{db.password}' host='{db.host}'")
     
     conn = db.get_connection()
     if params:
