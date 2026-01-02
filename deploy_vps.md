@@ -37,7 +37,7 @@ To access your dashboard comfortably without using ugly port numbers (like `:850
 
 3.  **Run the containers**:
     ```bash
-    docker-compose up -d --build
+      
     ```
 
 ### Step 2.2: Nginx Configuration

@@ -145,3 +145,23 @@ class GarminClient:
         except Exception as e:
             logger.error(f"Error fetching activity details for {activity_id}: {e}")
             return None
+
+    def get_user_settings(self):
+        """Fetch user settings including LTHR and VO2Max."""
+        try:
+            # Use garth directly as this endpoint isn't exposed in the wrapper typically
+            if hasattr(self.client, 'garth'):
+                data = self.client.garth.connectapi("/userprofile-service/userprofile/user-settings")
+                user_data = data.get('userData', {})
+                return {
+                    'lthr': user_data.get('lactateThresholdHeartRate'),
+                    'max_hr': None, # Usually in zones, but we can try to find it elsewhere if needed. 
+                                    # For now, LTHR is the gold mine.
+                    'vo2_max_cycling': user_data.get('vo2MaxCycling'),
+                    'vo2_max_running': user_data.get('vo2MaxRunning'),
+                    'resting_hr': None # Usually in daily summary
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching user settings: {e}")
+            return None

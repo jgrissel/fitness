@@ -115,12 +115,46 @@ class DBManager:
                     last_updated TIMESTAMP
                 )
             ''')
+            
+            # User Metrics Table (Singleton-ish, keyed by date mostly or just latest)
+            # For simplicity, let's keep a history of settings changes
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_metrics (
+                    date DATE PRIMARY KEY, 
+                    lthr_bpm INTEGER,
+                    vo2_max_cycling REAL,
+                    vo2_max_running REAL,
+                    last_updated TIMESTAMP
+                )
+            ''')
 
             conn.commit()
             cursor.close()
             conn.close()
         except Exception as e:
             logger.error(f"Error initializing database: {e}")
+
+    def upsert_user_metrics(self, data):
+        """
+        Upsert user metrics. 
+        Data should include: date, lthr_bpm, vo2_max_cycling, etc.
+        """
+        self._upsert('user_metrics', 'date', data)
+
+    def get_latest_user_metrics(self):
+        """Get the most recent user metrics."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT lthr_bpm, vo2_max_cycling FROM user_metrics ORDER BY date DESC LIMIT 1")
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                return {'lthr_bpm': row[0], 'vo2_max_cycling': row[1]}
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching latest metrics: {e}")
+            return None
 
     def upsert_daily_summary(self, data):
         self._upsert('daily_summary', 'date', data)
@@ -180,7 +214,63 @@ class DBManager:
             if result:
                 return result[0]
             return None
+            return None
         except Exception as e:
             logger.error(f"Error fetching details for {activity_id}: {e}")
+            return None
+
+    def get_recent_activity_ids(self, days=60, activity_types=None):
+        """
+        Get list of activity IDs for the last N days.
+        args:
+            days (int): Lookback period.
+            activity_types (list): Optional list of activity types to filter by (e.g., ['cycling', 'virtual_ride']).
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            if activity_types:
+                # Format for IN clause
+                placeholders = ', '.join(['%s'] * len(activity_types))
+                query = f"""
+                    SELECT activity_id 
+                    FROM activities 
+                    WHERE start_time >= NOW() - INTERVAL '%s days'
+                    AND activity_type IN ({placeholders})
+                    ORDER BY start_time DESC
+                """
+                params = [days] + activity_types
+                cursor.execute(query, tuple(params))
+            else:
+                query = """
+                    SELECT activity_id 
+                    FROM activities 
+                    WHERE start_time >= NOW() - INTERVAL '%s days'
+                    ORDER BY start_time DESC
+                """
+                cursor.execute(query, (days,))
+                
+            results = [row[0] for row in cursor.fetchall()]
+            conn.close()
+            return results
+        except Exception as e:
+            logger.error(f"Error fetching recent activities: {e}")
+            return []
+
+    def get_max_heart_rate(self, days=180):
+        """Get the absolute maximum heart rate recorded in activities over the last N days."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            query = "SELECT MAX(max_hr) FROM activities WHERE start_time >= NOW() - INTERVAL '%s days'"
+            cursor.execute(query, (days,))
+            result = cursor.fetchone()
+            conn.close()
+            if result and result[0]:
+                return int(result[0])
+            return None # Fallback or None
+        except Exception as e:
+            logger.error(f"Error fetching max HR: {e}")
             return None
 

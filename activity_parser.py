@@ -90,3 +90,58 @@ def parse_activity_details(details_json):
     except Exception as e:
         logger.error(f"Error parsing activity details: {e}")
         return pd.DataFrame()
+
+def calculate_normalized_power(power_series: pd.Series, window: int = 30) -> float:
+    """
+    Calculate Normalized Power (NP) for a series of power data.
+    NP = (mean(rolling_avg_30s^4))^0.25
+    """
+    if power_series.empty:
+        return 0.0
+        
+    # 1. Rolling 30s average
+    rolling_avg = power_series.rolling(window=window).mean()
+    
+    # 2. Raise to 4th power
+    rolling_pow4 = rolling_avg ** 4
+    
+    # 3. Average of the values
+    avg_pow4 = rolling_pow4.mean()
+    
+    # 4. Fourth root
+    if avg_pow4 > 0:
+        return float(avg_pow4 ** 0.25)
+    return 0.0
+
+def calculate_decoupling(df: pd.DataFrame) -> float:
+    """
+    Calculate Aerobic Decoupling (Pa:HR).
+    Compares Efficiency Factor (NP/HR) of the first half vs second half.
+    Returns percentage increase in HR relative to Power (or drop in efficiency).
+    Decoupling = (EF1 - EF2) / EF1 * 100
+    Where EF = Normalized Power / Average Heart Rate
+    """
+    if df.empty or 'power' not in df.columns or 'heart_rate' not in df.columns:
+        return 0.0
+        
+    midpoint = len(df) // 2
+    first_half = df.iloc[:midpoint]
+    second_half = df.iloc[midpoint:]
+    
+    # Calculate Efficiency Factor (EF) for each half
+    # EF = NP / Avg HR
+    def get_ef(segment):
+        if segment.empty: return 0.0
+        np_val = calculate_normalized_power(segment['power'])
+        avg_hr = segment['heart_rate'].mean()
+        if avg_hr and avg_hr > 0:
+            return np_val / avg_hr
+        return 0.0
+        
+    ef1 = get_ef(first_half)
+    ef2 = get_ef(second_half)
+    
+    if ef1 > 0:
+        return (ef1 - ef2) / ef1 * 100.0
+    return 0.0
+

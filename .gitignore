@@ -43,3 +43,5 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+garmin_tokens/oauth1_token.json
+garmin_tokens/oauth2_token.json
