@@ -1,8 +1,12 @@
 import os
-from fastapi import FastAPI, HTTPException, Query, Security, Depends
+import io
+import zipfile
+import hashlib
+from fastapi import FastAPI, HTTPException, Query, Security, Depends, Request
 from fastapi.security import APIKeyHeader
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Response
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 import logging
 from db_manager import DBManager
@@ -24,21 +28,16 @@ def get_api_token(
 ):
     expected_token = os.getenv("API_TOKEN")
     if not expected_token:
-        # If no token configured on server, allow access (or blocking it? default to allow for back-compat unless strict)
-        # Plan said default 401. Let's make it secure by default.
         raise HTTPException(status_code=500, detail="Server misconfigured: API_TOKEN not set")
 
-    # Check query param
     if token == expected_token:
         return token
 
-    # Check header (Bearer <token>)
     if header_auth:
         if header_auth.startswith("Bearer "):
             header_token = header_auth.split(" ")[1]
             if header_token == expected_token:
                 return header_token
-        # Also support just raw token in header for simplicity if user messes up Bearer
         if header_auth == expected_token:
             return header_auth
 
@@ -46,9 +45,7 @@ def get_api_token(
 
 def get_db_data(query, params=None):
     """Helper to fetch data into a Pandas DataFrame."""
-    # Let exceptions bubble up so we can see them in the browser
     db = DBManager()
-    
     conn = db.get_connection()
     if params:
         df = pd.read_sql_query(query, conn, params=params)
@@ -85,7 +82,10 @@ def df_to_html(df, title="Data Export"):
     """
     return html
 
-from fastapi import Response
+def set_no_cache(response: Response):
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
 
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -95,14 +95,9 @@ def index():
         <li><a href="/daily">/daily</a> - Daily Summary Stats</li>
         <li><a href="/sleep">/sleep</a> - Sleep Data</li>
         <li><a href="/hrv">/hrv</a> - HRV Data</li>
-        <li><a href="/activities/export">/activities/export</a> - <b>FULL Export (Last 6 Months)</b></li>
+        <li><a href="/export/index">/export/index</a> - <b>AI Data Index</b></li>
     </ul>
     """
-
-def set_no_cache(response: Response):
-    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
 
 @app.get("/daily", response_class=HTMLResponse)
 def get_daily(response: Response):
@@ -131,167 +126,171 @@ def get_hrv(response: Response):
     except Exception as e:
         return f"<h3>Error loading HRV Summary</h3><p>{e}</p>"
 
-@app.get("/activities/export", response_class=HTMLResponse)
-def export_activities(months: int = Query(6, ge=1, le=24)):
+# ------------------------------------------------------------------------------
+# NEW: File-Based Export Endpoints
+# ------------------------------------------------------------------------------
+
+DOMAIN = "https://fitness.grissel.dev" # Hardcoded as per config
+
+@app.get("/export/index", response_class=JSONResponse)
+def export_index(response: Response, auth: str = Depends(get_api_token)):
     """
-    Exports all activities from the last X months into a single HTML report.
-    Includes summary stats AND detailed metrics (resampled to decent resolution).
+    Returns a lightweight JSON index pointing to downloadable CSV/ZIP assets.
     """
-    import traceback
+    set_no_cache(response)
+    try:
+        # Get Time Range
+        db = DBManager()
+        # Efficiently get min/max date from activities (or daily)
+        range_df = get_db_data("SELECT MIN(start_time), MAX(start_time) FROM activities")
+        min_date = range_df.iloc[0, 0] if not range_df.empty and range_df.iloc[0, 0] else datetime.now()
+        max_date = range_df.iloc[0, 1] if not range_df.empty and range_df.iloc[0, 1] else datetime.now()
+
+        # Construct Index
+        index_data = {
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "schema_version": "1.0.0",
+            "source_range": {
+                "start": str(min_date),
+                "end": str(max_date)
+            },
+            "athlete": {
+                "name": "James",
+                "ftp_anchor": 203 # Placeholder/Configurable
+            },
+            "files": {
+                "daily_metrics_csv": f"{DOMAIN}/exports/daily_metrics.csv?token={auth}",
+                "activities_index_csv": f"{DOMAIN}/exports/activities_index.csv?token={auth}",
+                "activities_detail_zip": f"{DOMAIN}/exports/activities_detail.zip?token={auth}"
+            }
+            # Note: Hash not included yet to keep index response fast (requires reading all data)
+        }
+        return index_data
+    except Exception as e:
+        logger.error(f"Error generating index: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get("/exports/daily_metrics.csv")
+def export_daily_csv(response: Response, auth: str = Depends(get_api_token)):
+    set_no_cache(response)
+    try:
+        # Join Daily + Sleep + HRV for a consolidated view
+        # Using FULL OUTER JOINs or just Left Joins if Daily is the anchor
+        query = """
+            SELECT 
+                d.date,
+                d.total_steps,
+                d.total_distance_meters,
+                d.active_kcal,
+                d.resting_hr,
+                d.min_hr,
+                d.max_hr,
+                d.avg_stress,
+                d.body_battery_low, 
+                d.body_battery_high,
+                s.total_sleep_seconds,
+                s.sleep_score,
+                s.sleep_quality,
+                h.last_night_avg as hrv_last_night_avg,
+                h.status as hrv_status
+            FROM daily_summary d
+            LEFT JOIN sleep_summary s ON d.date = s.date
+            LEFT JOIN hrv_summary h ON d.date = h.date
+            ORDER BY d.date DESC
+        """
+        df = get_db_data(query)
+        
+        # Ensure 'sleep_hours' exists if preferred
+        if 'total_sleep_seconds' in df.columns:
+             df['sleep_hours'] = df['total_sleep_seconds'] / 3600.0
+        
+        stream = io.StringIO()
+        df.to_csv(stream, index=False)
+        response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
+        response.headers["Content-Disposition"] = "attachment; filename=daily_metrics.csv"
+        return response
+    except Exception as e:
+        logger.error(f"Error exporting daily csv: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/exports/activities_index.csv")
+def export_activities_csv(response: Response, auth: str = Depends(get_api_token)):
+    set_no_cache(response)
+    try:
+        # Specific columns requested
+        query = """
+            SELECT 
+                activity_id,
+                start_time,
+                activity_type as sport,
+                duration_seconds,
+                distance_meters,
+                avg_power,
+                max_power,
+                avg_hr,
+                max_hr,
+                elevation_gain_meters,
+                calories
+            FROM activities
+            ORDER BY start_time DESC
+        """
+        df = get_db_data(query)
+        
+        stream = io.StringIO()
+        df.to_csv(stream, index=False)
+        response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
+        response.headers["Content-Disposition"] = "attachment; filename=activities_index.csv"
+        return response
+    except Exception as e:
+        logger.error(f"Error exporting activities csv: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/exports/activities_detail.zip")
+def export_activities_zip(response: Response, auth: str = Depends(get_api_token)):
+    set_no_cache(response)
     try:
         db = DBManager()
+        # Fetch last 90 days of activity IDs
+        # To avoid massive creation, stick to limits for now or stream
+        # Creating a ZIP in memory
         
-        # 1. Fetch Activities
-        cutoff_date = datetime.now() - timedelta(days=30 * months)
-        query = "SELECT * FROM activities WHERE start_time >= %s ORDER BY start_time DESC"
-        activities_df = get_db_data(query, (cutoff_date,))
+        # 1. Get List of Activities
+        ids = db.get_recent_activity_ids(days=90) # Default 60 in db_manager, we override to 90
         
-        if activities_df.empty:
-            return "<h3>Activity Export</h3><p>No activities found in the selected range.</p>"
-        
-        # Start building the massive HTML string
-        html_parts = ["""
-        <html>
-        <head>
-            <title>Activity Export</title>
-            <style>
-                body {{ font-family: sans-serif; padding: 20px; }}
-                .activity {{ border: 1px solid #ccc; margin-bottom: 30px; padding: 15px; border-radius: 5px; }}
-                .header {{ background-color: #eee; padding: 10px; font-weight: bold; }}
-                table {{ border-collapse: collapse; width: 100%; font-size: 0.9em; }}
-                th, td {{ border: 1px solid #ddd; padding: 4px; text-align: right; }}
-                th {{ text-align: center; background-color: #f8f8f8; }}
-            </style>
-        </head>
-        <body>
-        <h1>Activity Export (Last {} Months)</h1>
-        <p>Generated: {}</p>
-        <hr>
-        """.format(months, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))]
-        
-        # 2. Iterate and Append Details
-        for _, act in activities_df.iterrows():
-            act_id = int(act['activity_id'])
-            
-            # Header Info
-            header_html = f"""
-            <div class="activity">
-                <div class="header">
-                    {act['start_time']} - {act['activity_name']} ({act['activity_type']})<br>
-                    Dist: {act['distance_meters']:.1f}m | Dur: {act['duration_seconds']}s | HR: {act['avg_hr']} | Cal: {act['calories']}
-                </div>
-            """
-            html_parts.append(header_html)
-            
-            # Fetch Details
-            details_json = db.get_activity_details_json(act_id)
-            if details_json:
-                df_details = parse_activity_details(details_json)
-                if not df_details.empty:
-                    # OPTIMIZATION: Resample to reduce size if row count is huge
-                    # For ChatGPT, 1-second resolution for a 2-hour run is ~7200 rows. That's a lot of tokens.
-                    # Let's resample to 1-minute intervals (approx) or take every 60th row if no timestamp index
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for act_id in ids:
+                details = db.get_activity_details_json(act_id)
+                if details:
+                    # Parse to DataFrame just to normalize/sample if needed, 
+                    # OR just dump the raw JSON which is preserved in DB. 
+                    # Raw JSON is better for "details" export usually.
+                    # But user wanted 'stable columns'. 
+                    # Let's dump the RAW JSON for maximum fidelity, as parsing CSVs for every activity in a zip is weird.
+                    # Actually, usually 'details.zip' implies either JSONs or CSVs. JSON is standard.
+                    import json
                     
-                    if len(df_details) > 300:
-                        # Keep roughly 100-200 data points per activity for readability/context window
-                        # This gives enough fidelity for "digging in" without overwhelming
-                        step = max(1, len(df_details) // 100)
-                        df_details = df_details.iloc[::step]
+                    # We can use the 'parse_activity_details' if we want to enforce standard columns 
+                    # and save as CSV inside the ZIP. 
+                    # Let's save as JSON for flexibility, or CSV if strict schema needed.
+                    # User said "activities_detail.zip", didn't specify format inside, 
+                    # but context of "Linked Index" usually implies getting the raw time series.
+                    # Let's stick to JSON for the details files.
                     
-                    # Filter columns to interesting ones
-                    cols_to_keep = [c for c in ['timestamp', 'heart_rate', 'power', 'cadence', 'speed', 'elevation'] if c in df_details.columns]
-                    if cols_to_keep:
-                        html_parts.append("<h4>Sampled Metrics (Every ~1% of duration)</h4>")
-                        html_parts.append(df_details[cols_to_keep].to_html(index=False, border=0))
-                    else:
-                        html_parts.append("<p><i>No detailed metrics available (columns missing).</i></p>")
-                else:
-                    html_parts.append("<p><i>Detailed metrics parsed empty.</i></p>")
-            else:
-                html_parts.append("<p><i>No detailed metrics in database.</i></p>")
-                
-            html_parts.append("</div>") # Close activity div
-            
-        html_parts.append("</body></html>")
-        return "".join(html_parts)
-    except Exception:
-        return f"<h3>Internal Server Error</h3><pre>{traceback.format_exc()}</pre>"
-
-@app.get("/export/latest", response_class=JSONResponse)
-def export_latest_bundle(auth: str = Depends(get_api_token)):
-    """
-    Returns a JSON bundle of the latest data for AI consumption.
-    Includes: Daily Summary, Sleep, HRV, and last 5 Activities (with details).
-    """
-    try:
-        db = DBManager()
-        bundle = {}
-
-        # 1. Summaries (Latest Record)
-        # Using helper to get DataFrame, then converting to dict
-        daily = get_db_data("SELECT * FROM daily_summary ORDER BY date DESC LIMIT 1")
-        # Fix NaN for JSON
-        daily = daily.astype(object).where(pd.notnull(daily), None)
-        bundle['daily'] = daily.to_dict(orient='records')[0] if not daily.empty else None
-
-        sleep = get_db_data("SELECT * FROM sleep_summary ORDER BY date DESC LIMIT 1")
-        sleep = sleep.astype(object).where(pd.notnull(sleep), None)
-        bundle['sleep'] = sleep.to_dict(orient='records')[0] if not sleep.empty else None
-
-        hrv = get_db_data("SELECT * FROM hrv_summary ORDER BY date DESC LIMIT 1")
-        hrv = hrv.astype(object).where(pd.notnull(hrv), None)
-        bundle['hrv'] = hrv.to_dict(orient='records')[0] if not hrv.empty else None
-
-        # 2. Recent Activities (Last 5)
-        activities_df = get_db_data("SELECT * FROM activities ORDER BY start_time DESC LIMIT 5")
-        activities_df = activities_df.astype(object).where(pd.notnull(activities_df), None)
-        activities_list = []
+                    # Fix NaNs before dumping
+                    # If details is a list of dicts (which it usually is from Garmin)
+                    
+                    fname = f"activity_{act_id}.json"
+                    zip_file.writestr(fname, json.dumps(details, default=str)) # default=str handles dates
         
-        if not activities_df.empty:
-            for _, act in activities_df.iterrows():
-                act_dict = act.to_dict()
-                act_id = int(act['activity_id'])
-                
-                # Attach details if available
-                details_json = db.get_activity_details_json(act_id)
-                if details_json:
-                    # Simplify details for AI context window if needed, or send raw
-                    # For now, let's parse it to a simplified list of samples
-                    df_details = parse_activity_details(details_json)
-                    if not df_details.empty:
-                        # Resample to reduce token usage (e.g., every 10th row)
-                        step = max(1, len(df_details) // 50) 
-                        df_sampled = df_details.iloc[::step]
-                        
-                        # Fix NaN in samples
-                        df_sampled = df_sampled.astype(object).where(pd.notnull(df_sampled), None)
-                        
-                        # Convert timestamps to string for JSON serialization
-                        json_details = df_sampled.to_dict(orient='records')
-                        # Sanitize timestamps
-                        for record in json_details:
-                            if 'timestamp' in record and isinstance(record['timestamp'], (datetime, pd.Timestamp)):
-                                record['timestamp'] = str(record['timestamp'])
-                        
-                        act_dict['samples'] = json_details
-                    else:
-                        act_dict['samples'] = []
-                else:
-                    act_dict['samples'] = None
-                
-                # Sanitize main activity timestamps
-                if 'start_time' in act_dict and isinstance(act_dict['start_time'], (datetime, pd.Timestamp)):
-                    act_dict['start_time'] = str(act_dict['start_time'])
-                if 'last_updated' in act_dict and isinstance(act_dict['last_updated'], (datetime, pd.Timestamp)):
-                    act_dict['last_updated'] = str(act_dict['last_updated'])
-
-                activities_list.append(act_dict)
-
-        bundle['activities'] = activities_list
-        bundle['generated_at'] = str(datetime.now())
-        
-        return bundle
+        zip_buffer.seek(0)
+        return StreamingResponse(
+            iter([zip_buffer.getvalue()]), 
+            media_type="application/zip", 
+            headers={"Content-Disposition": "attachment; filename=activities_detail.zip"}
+        )
 
     except Exception as e:
-        logger.error(f"Error generating bundle: {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        logger.error(f"Error exporting zip: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
