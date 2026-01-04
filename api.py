@@ -130,7 +130,7 @@ def get_hrv(response: Response):
 # NEW: File-Based Export Endpoints
 # ------------------------------------------------------------------------------
 
-DOMAIN = "https://fitness.grissel.dev" # Hardcoded as per config
+DOMAIN = "https://fitness.grissel.dev/api" # Hardcoded as per config
 
 @app.get("/export/index", response_class=JSONResponse)
 def export_index(response: Response, auth: str = Depends(get_api_token)):
