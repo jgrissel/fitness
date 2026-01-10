@@ -206,8 +206,8 @@ def export_daily_csv(response: Response, auth: str = Depends(get_api_token)):
         
         stream = io.StringIO()
         df.to_csv(stream, index=False)
-        response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
-        response.headers["Content-Disposition"] = "attachment; filename=daily_metrics.csv"
+        response = StreamingResponse(iter([stream.getvalue()]), media_type="text/plain; charset=utf-8")
+        response.headers["Content-Disposition"] = "inline; filename=daily_metrics.csv"
         return response
     except Exception as e:
         logger.error(f"Error exporting daily csv: {e}")
@@ -238,8 +238,8 @@ def export_activities_csv(response: Response, auth: str = Depends(get_api_token)
         
         stream = io.StringIO()
         df.to_csv(stream, index=False)
-        response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
-        response.headers["Content-Disposition"] = "attachment; filename=activities_index.csv"
+        response = StreamingResponse(iter([stream.getvalue()]), media_type="text/plain; charset=utf-8")
+        response.headers["Content-Disposition"] = "inline; filename=activities_index.csv"
         return response
     except Exception as e:
         logger.error(f"Error exporting activities csv: {e}")
